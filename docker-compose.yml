@@ -1,0 +1,112 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: tracking-orders-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-tracking_orders}
+      MYSQL_USER: ${MYSQL_USER:-tracking_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-tracking_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: tracking-orders-redis
+    restart: unless-stopped
+    networks:
+      - app-network
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+  backend:
+    build:
+      context: ./backend-tracking-orders
+      dockerfile: Dockerfile
+    container_name: tracking-orders-backend
+    restart: unless-stopped
+    working_dir: /var/www/html
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      APP_KEY: ${APP_KEY:-}
+      APP_URL: ${APP_URL:-http://localhost}
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: ${MYSQL_DATABASE:-tracking_orders}
+      DB_USERNAME: ${MYSQL_USER:-tracking_user}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-tracking_password}
+      SESSION_DRIVER: database
+      SESSION_LIFETIME: 120
+      CACHE_STORE: database
+      QUEUE_CONNECTION: database
+      BROADCAST_CONNECTION: log
+      FILESYSTEM_DISK: local
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ./backend-tracking-orders:/var/www/html:cached
+      - backend_vendor:/var/www/html/vendor
+      - backend_storage:/var/www/html/storage
+      - backend_cache:/var/www/html/bootstrap/cache
+    networks:
+      - app-network
+    expose:
+      - "9000"
+    command: >
+      sh -c "test -n \"$APP_KEY\" || php artisan key:generate --force; php-fpm -F"
+
+  frontend:
+    build:
+      context: ./frontend-tracking-orders
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost/api}
+        VITE_STORAGE_URL: ${VITE_STORAGE_URL:-http://localhost/storage}
+    container_name: tracking-orders-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - app-network
+    expose:
+      - "80"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: tracking-orders-nginx
+    restart: unless-stopped
+    depends_on:
+      - frontend
+      - backend
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${APP_PORT:-80}:80"
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_data:
+  backend_vendor:
+  backend_storage:
+  backend_cache:
